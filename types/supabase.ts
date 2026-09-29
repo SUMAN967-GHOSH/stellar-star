@@ -344,6 +344,7 @@ export type Database = {
           p_token_hash: string;
           p_claiming_wallet: string;
           p_selected_member_id?: string;
+          p_expected_trip_id?: string;
         };
         Returns: Json;
       };

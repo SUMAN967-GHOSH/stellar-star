@@ -801,7 +801,8 @@ CREATE TRIGGER trg_01_trip_invites_set_updated_at
 CREATE OR REPLACE FUNCTION public.claim_trip_invite(
   p_token_hash TEXT,
   p_claiming_wallet TEXT,
-  p_selected_member_id TEXT DEFAULT NULL
+  p_selected_member_id TEXT DEFAULT NULL,
+  p_expected_trip_id TEXT DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -817,6 +818,8 @@ DECLARE
   v_member JSONB;
   v_found BOOLEAN := FALSE;
   v_already_claimed BOOLEAN := FALSE;
+  v_normalized_wallet TEXT;
+  v_existing_wallet TEXT;
   v_idx INT;
   v_len INT;
 BEGIN
@@ -824,6 +827,7 @@ BEGIN
   IF p_claiming_wallet IS NULL OR btrim(p_claiming_wallet) = '' THEN
     RAISE EXCEPTION 'Claiming wallet address is required';
   END IF;
+  v_normalized_wallet := upper(btrim(p_claiming_wallet));
 
   -- 2. Lock and validate the invite row
   SELECT *
@@ -848,6 +852,13 @@ BEGIN
     RAISE EXCEPTION 'INVITE_EXHAUSTED: This invitation has already reached its maximum uses';
   END IF;
 
+  -- Validate expected trip id if provided
+  IF p_expected_trip_id IS NOT NULL AND btrim(p_expected_trip_id) <> '' THEN
+    IF v_invite.trip_id <> btrim(p_expected_trip_id) THEN
+      RAISE EXCEPTION 'TRIP_MISMATCH: Invitation token does not belong to the specified trip';
+    END IF;
+  END IF;
+
   -- 3. Lock and retrieve the trip row
   SELECT *
     INTO v_trip
@@ -864,6 +875,27 @@ BEGIN
   v_members := COALESCE(v_trip.members, '[]'::jsonb);
   v_len := jsonb_array_length(v_members);
 
+  -- 5. Single-membership check: ensure claiming wallet does not already hold another member slot in this trip
+  FOR v_idx IN 0..(v_len - 1) LOOP
+    v_member := v_members -> v_idx;
+    v_existing_wallet := upper(btrim(COALESCE(v_member ->> 'walletAddress', '')));
+    IF v_existing_wallet <> '' AND v_existing_wallet = v_normalized_wallet THEN
+      -- If the wallet already belongs to the target member slot, it's an idempotent retry
+      IF v_target_member_id IS NOT NULL AND (v_member ->> 'id') = v_target_member_id THEN
+        RETURN jsonb_build_object(
+          'success', true,
+          'trip_id', v_trip.id,
+          'trip_name', v_trip.name,
+          'member_id', v_target_member_id,
+          'member_name', v_member ->> 'name',
+          'message', 'Already claimed by this wallet'
+        );
+      ELSE
+        RAISE EXCEPTION 'WALLET_ALREADY_MEMBER: This wallet is already a member of this trip';
+      END IF;
+    END IF;
+  END LOOP;
+
   IF v_target_member_id IS NOT NULL THEN
     -- Look for specified member slot
     FOR v_idx IN 0..(v_len - 1) LOOP
@@ -874,7 +906,7 @@ BEGIN
         
         -- Check if already claimed
         IF (v_member ->> 'walletAddress') IS NOT NULL AND btrim(v_member ->> 'walletAddress') <> '' THEN
-          IF (v_member ->> 'walletAddress') = p_claiming_wallet THEN
+          IF upper(btrim(v_member ->> 'walletAddress')) = v_normalized_wallet THEN
             -- Idempotent retry by the same wallet
             RETURN jsonb_build_object(
               'success', true,
@@ -923,12 +955,12 @@ BEGIN
     END IF;
   END IF;
 
-  -- 5. Update trip members JSONB (triggers sync_member_wallets)
+  -- 6. Update trip members JSONB (triggers sync_member_wallets)
   UPDATE public.trips
      SET members = v_updated_members
    WHERE id = v_trip.id;
 
-  -- 6. Update expenses linked to this trip
+  -- 7. Update expenses linked to this trip
   -- Update members and shares for this member_id to attach walletAddress
   UPDATE public.expenses
      SET members = (
@@ -951,7 +983,7 @@ BEGIN
          )
    WHERE (id::text = ANY(v_trip.expense_ids) OR v_trip.id::text = ANY(member_wallets) OR members @> jsonb_build_array(jsonb_build_object('id', v_target_member_id)));
 
-  -- 7. Increment invite uses
+  -- 8. Increment invite uses
   UPDATE public.trip_invites
      SET uses = uses + 1
    WHERE id = v_invite.id;
@@ -966,7 +998,7 @@ BEGIN
 END;
 $fn$;
 
-GRANT EXECUTE ON FUNCTION public.claim_trip_invite(TEXT, TEXT, TEXT) TO anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.claim_trip_invite(TEXT, TEXT, TEXT, TEXT) TO anon, authenticated;
 
 -- ── Public Invite Verification (ISSUE #221) ─────────────────────────────────
 -- Receiving an invite link happens before you are a member of the trip, and

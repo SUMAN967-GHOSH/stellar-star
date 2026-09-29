@@ -1,6 +1,7 @@
 import { generateInviteToken, hashToken, buildInviteUrl } from "./tokens";
 import { requireSupabaseClient, requireAuthenticatedClient, type StellarStarClient } from "@/lib/supabase/client";
 import { isValidStellarAddress } from "@/lib/split/calculator";
+import { normalizeWalletAddress } from "@/lib/trip/members";
 import type { TripInvite, TripInviteSummary, Trip } from "@/types/trip";
 import type { Member } from "@/types/expense";
 
@@ -160,6 +161,7 @@ function inviteErrorMessage(raw: string): string {
 export async function verifyTripInvite(
   token: string,
   client?: StellarStarClient,
+  expectedTripId?: string,
 ): Promise<TripInviteSummary> {
   const cleanToken = (token ?? "").trim();
   if (!cleanToken) {
@@ -185,6 +187,10 @@ export async function verifyTripInvite(
       expires_at: string;
       unclaimed_members: Array<{ id: string; name: string }> | null;
     };
+
+    if (expectedTripId && row.trip_id !== expectedTripId.trim()) {
+      throw new Error("TRIP_MISMATCH: Invitation token does not belong to the specified trip.");
+    }
 
     return {
       inviteId: row.invite_id,
@@ -237,6 +243,10 @@ export async function verifyTripInvite(
     throw new Error("This invitation has already reached its maximum uses.");
   }
 
+  if (expectedTripId && inviteData.trip_id !== expectedTripId.trim()) {
+    throw new Error("TRIP_MISMATCH: Invitation token does not belong to the specified trip.");
+  }
+
   // Fetch public trip details
   const { data: tripData, error: tripError } = await db
     .from("trips")
@@ -284,8 +294,9 @@ export async function claimTripInvite(
   claimingWallet: string,
   selectedMemberId?: string,
   client?: StellarStarClient,
+  expectedTripId?: string,
 ): Promise<ClaimInviteResult> {
-  const cleanWallet = (claimingWallet ?? "").trim();
+  const cleanWallet = normalizeWalletAddress(claimingWallet ?? "");
   if (!cleanWallet || !isValidStellarAddress(cleanWallet)) {
     throw new Error("Invalid Stellar wallet address provided for claim.");
   }
@@ -303,39 +314,169 @@ export async function claimTripInvite(
     p_token_hash: tokenHash,
     p_claiming_wallet: cleanWallet,
     p_selected_member_id: selectedMemberId || undefined,
+    p_expected_trip_id: expectedTripId || undefined,
   });
 
-  if (error) {
+  if (!error && data) {
+    const res = data as {
+      success: boolean;
+      trip_id: string;
+      trip_name: string;
+      member_id: string;
+      member_name: string;
+    };
+
+    return {
+      success: true,
+      tripId: res.trip_id,
+      tripName: res.trip_name,
+      memberId: res.member_id,
+      memberName: res.member_name,
+    };
+  }
+
+  if (error && !isMissingRpc(error)) {
     const msg = error.message || "Failed to claim invitation.";
+    if (msg.includes("TRIP_MISMATCH")) {
+      throw new Error("TRIP_MISMATCH: Invitation token does not belong to the specified trip.");
+    }
+    if (msg.includes("INVITE_MEMBER_MISMATCH")) {
+      throw new Error("INVITE_MEMBER_MISMATCH: Invitation token is dedicated to a different member slot.");
+    }
+    if (msg.includes("WALLET_ALREADY_MEMBER")) {
+      throw new Error("WALLET_ALREADY_MEMBER: This wallet is already a member of this trip.");
+    }
     if (msg.includes("SLOT_ALREADY_CLAIMED")) {
-      throw new Error("This member slot has already been claimed by another wallet.");
+      throw new Error("SLOT_ALREADY_CLAIMED: This member slot has already been claimed by another wallet.");
+    }
+    if (msg.includes("MEMBER_NOT_FOUND")) {
+      throw new Error("MEMBER_NOT_FOUND: The selected member slot was not found in this trip.");
     }
     if (msg.includes("INVITE_REVOKED")) {
-      throw new Error("This invitation has been revoked.");
+      throw new Error("INVITE_REVOKED: This invitation has been revoked.");
     }
     if (msg.includes("INVITE_EXPIRED")) {
-      throw new Error("This invitation has expired.");
+      throw new Error("INVITE_EXPIRED: This invitation has expired.");
     }
     if (msg.includes("INVITE_EXHAUSTED")) {
-      throw new Error("This invitation has already reached its maximum uses.");
+      throw new Error("INVITE_EXHAUSTED: This invitation has already reached its maximum uses.");
+    }
+    if (msg.includes("TRIP_NOT_FOUND")) {
+      throw new Error("TRIP_NOT_FOUND: Associated trip no longer exists.");
+    }
+    if (msg.includes("INVITE_NOT_FOUND")) {
+      throw new Error("INVITE_NOT_FOUND: Invalid or unrecognized invitation token.");
     }
     throw new Error(msg);
   }
 
-  const res = data as {
-    success: boolean;
-    trip_id: string;
-    trip_name: string;
-    member_id: string;
-    member_name: string;
-  };
+  // Fallback: If RPC is missing, execute claim via direct queries/mutations
+  const { data: inviteData, error: inviteErr } = await db
+    .from("trip_invites")
+    .select("*")
+    .eq("token_hash", tokenHash)
+    .maybeSingle();
+
+  if (inviteErr || !inviteData) {
+    throw new Error("INVITE_NOT_FOUND: Invalid or unrecognized invitation token.");
+  }
+  if (inviteData.revoked) {
+    throw new Error("INVITE_REVOKED: This invitation has been revoked.");
+  }
+  if (new Date(inviteData.expires_at).getTime() <= Date.now()) {
+    throw new Error("INVITE_EXPIRED: This invitation has expired.");
+  }
+  if (inviteData.uses >= inviteData.max_uses) {
+    throw new Error("INVITE_EXHAUSTED: This invitation has already reached its maximum uses.");
+  }
+
+  if (expectedTripId && inviteData.trip_id !== expectedTripId.trim()) {
+    throw new Error("TRIP_MISMATCH: Invitation token does not belong to the specified trip.");
+  }
+
+  const { data: tripData, error: tripErr } = await db
+    .from("trips")
+    .select("*")
+    .eq("id", inviteData.trip_id)
+    .single();
+
+  if (tripErr || !tripData) {
+    throw new Error("TRIP_NOT_FOUND: Associated trip no longer exists.");
+  }
+
+  const members: Member[] = Array.isArray(tripData.members) ? [...tripData.members] : [];
+  const targetMemberId = inviteData.member_id || selectedMemberId;
+
+  // Single-membership check: ensure claiming wallet does not already hold another member slot in this trip
+  for (const m of members) {
+    const existingWallet = normalizeWalletAddress(m.walletAddress ?? "");
+    if (existingWallet && existingWallet === cleanWallet) {
+      if (targetMemberId && m.id === targetMemberId) {
+        // Idempotent retry on the same slot
+        return {
+          success: true,
+          tripId: tripData.id,
+          tripName: tripData.name,
+          memberId: m.id,
+          memberName: m.name,
+        };
+      }
+      throw new Error("WALLET_ALREADY_MEMBER: This wallet is already a member of this trip.");
+    }
+  }
+
+  let targetMember: Member | undefined;
+  if (targetMemberId) {
+    targetMember = members.find((m) => m.id === targetMemberId);
+    if (!targetMember) {
+      throw new Error(`MEMBER_NOT_FOUND: Member slot ${targetMemberId} not found in trip.`);
+    }
+    if (targetMember.walletAddress && targetMember.walletAddress.trim() !== "") {
+      const existingWallet = normalizeWalletAddress(targetMember.walletAddress);
+      if (existingWallet === cleanWallet) {
+        return {
+          success: true,
+          tripId: tripData.id,
+          tripName: tripData.name,
+          memberId: targetMember.id,
+          memberName: targetMember.name,
+        };
+      }
+      throw new Error("SLOT_ALREADY_CLAIMED: This member slot has already been claimed by another wallet.");
+    }
+    targetMember.walletAddress = cleanWallet;
+  } else {
+    targetMember = members.find((m) => !m.walletAddress || m.walletAddress.trim() === "");
+    if (targetMember) {
+      targetMember.walletAddress = cleanWallet;
+    } else {
+      targetMember = {
+        id: `m-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`,
+        name: `Member ${members.length + 1}`,
+        walletAddress: cleanWallet,
+      };
+      members.push(targetMember);
+    }
+  }
+
+  // Update trip members
+  await db
+    .from("trips")
+    .update({ members })
+    .eq("id", tripData.id);
+
+  // Increment invite uses
+  await db
+    .from("trip_invites")
+    .update({ uses: (inviteData.uses ?? 0) + 1 })
+    .eq("id", inviteData.id);
 
   return {
     success: true,
-    tripId: res.trip_id,
-    tripName: res.trip_name,
-    memberId: res.member_id,
-    memberName: res.member_name,
+    tripId: tripData.id,
+    tripName: tripData.name,
+    memberId: targetMember.id,
+    memberName: targetMember.name,
   };
 }
 

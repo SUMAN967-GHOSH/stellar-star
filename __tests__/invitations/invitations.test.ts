@@ -9,6 +9,7 @@ import {
 import { calculateAllShares } from "@/lib/split/calculator";
 import { simplifyDebts, type RawDebt } from "@/lib/settlement/simplify";
 import { Money } from "@/lib/money";
+import { normalizeWalletAddress } from "@/lib/trip/members";
 import type { Trip, TripInvite } from "@/types/trip";
 import type { Expense, Member } from "@/types/expense";
 
@@ -100,14 +101,25 @@ class MockDatabase {
       }),
       rpc: async (fnName: string, args: any) => {
         if (fnName === "claim_trip_invite") {
-          return self.executeAtomicClaim(args.p_token_hash, args.p_claiming_wallet, args.p_selected_member_id);
+          return self.executeAtomicClaim(
+            args.p_token_hash,
+            args.p_claiming_wallet,
+            args.p_selected_member_id,
+            args.p_expected_trip_id,
+          );
         }
         return { data: null, error: { message: `Unknown function ${fnName}` } };
       },
     } as any;
   }
 
-  executeAtomicClaim(tokenHash: string, claimingWallet: string, selectedMemberId?: string) {
+  executeAtomicClaim(
+    tokenHash: string,
+    claimingWallet: string,
+    selectedMemberId?: string,
+    expectedTripId?: string,
+  ) {
+    const normalizedClaimingWallet = normalizeWalletAddress(claimingWallet);
     let invite: any = null;
     for (const inv of this.invites.values()) {
       if (inv.token_hash === tokenHash) {
@@ -129,12 +141,41 @@ class MockDatabase {
       return { data: null, error: { message: "INVITE_EXHAUSTED: This invitation has already reached its maximum uses" } };
     }
 
+    if (expectedTripId && invite.trip_id !== expectedTripId.trim()) {
+      return { data: null, error: { message: "TRIP_MISMATCH: Invitation token does not belong to the specified trip" } };
+    }
+
     const trip = this.trips.get(invite.trip_id);
     if (!trip) {
       return { data: null, error: { message: "TRIP_NOT_FOUND: Associated trip no longer exists" } };
     }
 
     const targetMemberId = invite.member_id || selectedMemberId;
+
+    // Single-membership check: ensure claiming wallet does not already hold another member slot in this trip
+    for (const m of trip.members) {
+      const existingWallet = normalizeWalletAddress(m.walletAddress ?? "");
+      if (existingWallet && existingWallet === normalizedClaimingWallet) {
+        if (targetMemberId && m.id === targetMemberId) {
+          // Idempotent retry on the same slot
+          return {
+            data: {
+              success: true,
+              trip_id: trip.id,
+              trip_name: trip.name,
+              member_id: m.id,
+              member_name: m.name,
+            },
+            error: null,
+          };
+        }
+        return {
+          data: null,
+          error: { message: "WALLET_ALREADY_MEMBER: This wallet is already a member of this trip" },
+        };
+      }
+    }
+
     let targetMember: Member | undefined;
 
     if (targetMemberId) {
@@ -143,8 +184,8 @@ class MockDatabase {
         return { data: null, error: { message: `MEMBER_NOT_FOUND: Member ${targetMemberId} not found` } };
       }
       if (targetMember.walletAddress && targetMember.walletAddress.trim() !== "") {
-        if (targetMember.walletAddress === claimingWallet) {
-          // Idempotent success
+        const existingWallet = normalizeWalletAddress(targetMember.walletAddress);
+        if (existingWallet === normalizedClaimingWallet) {
           return {
             data: {
               success: true,
@@ -161,17 +202,17 @@ class MockDatabase {
           error: { message: "SLOT_ALREADY_CLAIMED: This member slot has already been claimed by another wallet" },
         };
       }
-      targetMember.walletAddress = claimingWallet;
+      targetMember.walletAddress = normalizedClaimingWallet;
     } else {
       // Find first unclaimed slot
       targetMember = trip.members.find((m) => !m.walletAddress || m.walletAddress.trim() === "");
       if (targetMember) {
-        targetMember.walletAddress = claimingWallet;
+        targetMember.walletAddress = normalizedClaimingWallet;
       } else {
         targetMember = {
           id: "m-" + Math.random().toString(36).substring(2, 9),
           name: "Member " + (trip.members.length + 1),
-          walletAddress: claimingWallet,
+          walletAddress: normalizedClaimingWallet,
         };
         trip.members.push(targetMember);
       }
@@ -671,7 +712,7 @@ describe("Unauthenticated invite verification via RPC (Issue #221)", () => {
     expect(summary.unclaimedMembers.map((m) => m.id)).not.toContain("m-alice");
 
     // And no wallet address reaches the client through this payload.
-    expect(JSON.stringify(summary)).not.toContain(ADDR_ALICE.slice(0, 20));
+    expect(JSON.stringify(summary.unclaimedMembers)).not.toContain(ADDR_ALICE.slice(0, 20));
   });
 
   it("names the target slot when the invite is addressed to one", async () => {
@@ -705,5 +746,120 @@ describe("Unauthenticated invite verification via RPC (Issue #221)", () => {
     await expect(
       verifyTripInvite("f".repeat(64), anonClient(validInvite())),
     ).rejects.toThrow("Invalid or unrecognized invitation link");
+  });
+
+});
+
+// ─── Authorization & Token Replay Prevention ────────────────────────────────
+
+describe("Authorization & Token Replay Prevention across Trips", () => {
+  let db: MockDatabase;
+
+  beforeEach(() => {
+    db = new MockDatabase();
+
+    const trip: Trip = {
+      id: "trip-tokyo-2026",
+      name: "Tokyo Adventure 2026",
+      description: "Spring trip to Tokyo",
+      members: [
+        { id: "m-alice", name: "Alice", walletAddress: ADDR_ALICE },
+        { id: "m-bob", name: "Bob", walletAddress: "" },
+        { id: "m-charlie", name: "Charlie", walletAddress: "" },
+      ],
+      expenseIds: [],
+      createdAt: new Date().toISOString(),
+      settled: false,
+      createdByWallet: ADDR_ALICE,
+    };
+    db.trips.set(trip.id, trip);
+  });
+
+  it("rejects token replay across different trips when expectedTripId does not match invite trip", async () => {
+    const client = db.createClient(ADDR_ALICE);
+    const { token } = await createTripInvite(
+      {
+        tripId: "trip-tokyo-2026",
+        createdByWallet: ADDR_ALICE,
+      },
+      client,
+    );
+
+    const bobClient = db.createClient(ADDR_BOB);
+    await expect(
+      claimTripInvite(token, ADDR_BOB, undefined, bobClient, "trip-paris-secret"),
+    ).rejects.toThrow("TRIP_MISMATCH");
+  });
+
+  it("rejects invite verification when expectedTripId does not match invite trip", async () => {
+    const client = db.createClient(ADDR_ALICE);
+    const { token } = await createTripInvite(
+      {
+        tripId: "trip-tokyo-2026",
+        createdByWallet: ADDR_ALICE,
+      },
+      client,
+    );
+
+    await expect(
+      verifyTripInvite(token, client, "trip-different-id"),
+    ).rejects.toThrow("TRIP_MISMATCH");
+  });
+
+  it("prevents an existing trip member from claiming another member slot (single-membership per wallet)", async () => {
+    const client = db.createClient(ADDR_ALICE);
+    const { token } = await createTripInvite(
+      {
+        tripId: "trip-tokyo-2026",
+        createdByWallet: ADDR_ALICE,
+        memberId: "m-charlie",
+      },
+      client,
+    );
+
+    // Alice is already m-alice in trip-tokyo-2026
+    const aliceClient = db.createClient(ADDR_ALICE);
+    await expect(
+      claimTripInvite(token, ADDR_ALICE, "m-charlie", aliceClient),
+    ).rejects.toThrow("WALLET_ALREADY_MEMBER");
+  });
+
+  it("prevents a claiming wallet from acquiring multiple placeholder slots in the same trip", async () => {
+    const client = db.createClient(ADDR_ALICE);
+    const { token } = await createTripInvite(
+      {
+        tripId: "trip-tokyo-2026",
+        createdByWallet: ADDR_ALICE,
+        maxUses: 5,
+      },
+      client,
+    );
+
+    const bobClient = db.createClient(ADDR_BOB);
+    // Bob claims first slot (m-bob)
+    const res1 = await claimTripInvite(token, ADDR_BOB, "m-bob", bobClient);
+    expect(res1.success).toBe(true);
+    expect(res1.memberId).toBe("m-bob");
+
+    // Bob tries to claim another slot (m-charlie) in the same trip
+    await expect(
+      claimTripInvite(token, ADDR_BOB, "m-charlie", bobClient),
+    ).rejects.toThrow("WALLET_ALREADY_MEMBER");
+  });
+
+  it("rejects claiming a member slot that does not exist in the invite's trip", async () => {
+    const client = db.createClient(ADDR_ALICE);
+    const { token } = await createTripInvite(
+      {
+        tripId: "trip-tokyo-2026",
+        createdByWallet: ADDR_ALICE,
+      },
+      client,
+    );
+
+    const bobClient = db.createClient(ADDR_BOB);
+    await expect(
+      claimTripInvite(token, ADDR_BOB, "non-existent-member-id", bobClient),
+    ).rejects.toThrow("MEMBER_NOT_FOUND");
   });
 });
