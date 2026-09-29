@@ -136,8 +136,14 @@ export function getSession(): Session | null {
     clearSession();
     return null;
   }
-  if (current && typeof window !== "undefined" && isExpiringSoon(current.claims)) {
-    void refreshSession();
+  if (
+    current &&
+    typeof window !== "undefined" &&
+    typeof fetch === "function" &&
+    !inFlightRefresh &&
+    isExpiringSoon(current.claims)
+  ) {
+    void refreshSession(current.token);
   }
   return current;
 }
@@ -234,12 +240,12 @@ let inFlightRefresh: Promise<Session | null> | null = null;
  * the renewal window. Deduplicates concurrent in-flight refresh requests.
  */
 export async function refreshSession(currentToken?: string): Promise<Session | null> {
-  const token = currentToken ?? getAccessToken();
-  if (!token) return null;
-
   if (inFlightRefresh) {
     return inFlightRefresh;
   }
+
+  const token = currentToken ?? current?.token;
+  if (!token) return null;
 
   inFlightRefresh = (async () => {
     try {
