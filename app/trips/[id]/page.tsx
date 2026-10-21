@@ -24,6 +24,7 @@ import { SaveTripTemplateForm } from "@/components/trips/SaveTripTemplateForm";
 import { DuplicateTripFlow } from "@/components/trips/TripCopyFlow";
 import { TripExportMenu } from "@/components/export/TripExportMenu";
 import { ReminderSchedulePanel } from "@/components/reminders/ReminderSchedulePanel";
+import { HouseholdCoordinationPanel } from "@/components/household/HouseholdCoordinationPanel";
 import { useAuth } from "@/context/AuthContext";
 import { useContractEvents } from "@/hooks/useContractEvents";
 import { useExpense } from "@/hooks/useExpense";
@@ -89,7 +90,7 @@ export function generateTripMetadata({
 export default function TripDetailPage() {
   const params = useParams<{ id: string }>();
   const safeId = sanitizeText(params?.id ?? "");
-  const { trips, getTrip, settleTrip, addExpenseToTrip, isLoading, refresh } = useTrip();
+  const { trips, getTrip, settleTrip, addExpenseToTrip, updateTrip, isLoading, refresh } = useTrip();
   const { expenses } = useExpense();
   const { publicKey } = useWallet();
   const { user } = useAuth();
@@ -220,6 +221,24 @@ export default function TripDetailPage() {
                   currentUserPublicKey={publicKey}
                   currentUserName={user?.displayName}
                   onExpenseCreated={(expenseId) => linkExpenseToTrip(trip.id, expenseId)}
+                />
+              </motion.div>
+            ) : activeTab === "chores" ? (
+              <motion.div
+                key="chores"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.15 }}
+              >
+                <HouseholdCoordinationPanel
+                  trip={trip}
+                  expenses={tripExpenses}
+                  currentWallet={publicKey}
+                  isOwner={isOwner}
+                  onToggleModule={async (enabled) => {
+                    await updateTrip(trip.id, { householdCoordinationEnabled: enabled });
+                  }}
                 />
               </motion.div>
             ) : (
