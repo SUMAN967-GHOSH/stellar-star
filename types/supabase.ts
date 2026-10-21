@@ -76,6 +76,7 @@ export type TripRow = {
   source_template_id: string | null;
   copied_from_trip_id: string | null;
   workspace?: Json | null;
+  household_coordination_enabled: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -403,6 +404,12 @@ export type IdempotencyRecordRow = {
   locked_until: string;
 };
 
+import type {
+  HouseholdChoreCompletionRow,
+  HouseholdChorePreferenceRow,
+  HouseholdChoreRow,
+} from "./householdChore";
+
 export type Database = {
   public: {
     Tables: {
@@ -480,6 +487,7 @@ export type Database = {
           permissions?: Json;
           source_template_id?: string | null;
           copied_from_trip_id?: string | null;
+          household_coordination_enabled?: boolean;
         };
         // Copy provenance is written once, by create_trip_from_copy.
         Update: Partial<
@@ -491,6 +499,31 @@ export type Database = {
         Row: TripRoleAuditRow;
         Insert: Record<string, never>;
         Update: Record<string, never>;
+        Relationships: [];
+      };
+      household_chores: {
+        Row: HouseholdChoreRow;
+        Insert: Omit<HouseholdChoreRow, "id" | "rotation_cursor" | "active" | "created_at" | "updated_at"> & {
+          id?: string;
+          rotation_cursor?: number;
+          active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Pick<HouseholdChoreRow, "title" | "details" | "cadence" | "rotation_wallets" | "rotation_cursor" | "next_due_on" | "active">>;
+        Relationships: [];
+      };
+      household_chore_completions: {
+        Row: HouseholdChoreCompletionRow;
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      household_chore_preferences: {
+        Row: HouseholdChorePreferenceRow;
+        Insert: Pick<HouseholdChorePreferenceRow, "trip_id" | "wallet_address"> &
+          Partial<Pick<HouseholdChorePreferenceRow, "opted_out" | "updated_at">>;
+        Update: Partial<Pick<HouseholdChorePreferenceRow, "opted_out" | "updated_at">>;
         Relationships: [];
       };
       trip_templates: {
@@ -788,6 +821,10 @@ export type Database = {
           p_tags: string[] | null; p_payer: string | null; p_status: string | null; p_asset: string | null;
           p_from: string | null; p_to: string | null; p_cursor_created_at: string | null; p_cursor_id: string | null; p_limit: number };
         Returns: ExpenseRow[];
+      };
+      complete_household_chore: {
+        Args: { p_chore_id: string; p_due_on: string; p_supply_expense_id: string | null };
+        Returns: string;
       };
       save_trip_template: {
         Args: { p_idempotency_key: string; p_source_trip_id: string; p_template: Json };
