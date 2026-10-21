@@ -51,6 +51,8 @@ export interface Trip {
   copiedFromTripId?: string;
   /** Lightweight travel workspace: itinerary, checklists, booking references */
   workspace?: TravelWorkspace;
+  /** Pilot-only shared household chores; disabled until the owner opts in. */
+  householdCoordinationEnabled?: boolean;
 }
 
 export type TripFormData = {
