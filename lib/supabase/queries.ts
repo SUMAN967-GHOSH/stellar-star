@@ -9,6 +9,15 @@
 import type { PostgrestError } from "@supabase/supabase-js";
 import type { Expense, Member, SplitShare } from "@/types/expense";
 import type { Trip, TripPermission, TripRole, TripTemplate } from "@/types/trip";
+import type {
+  HouseholdChore,
+  HouseholdChoreCompletion,
+  HouseholdChoreDraft,
+  HouseholdChorePreference,
+  HouseholdChoreCompletionRow,
+  HouseholdChorePreferenceRow,
+  HouseholdChoreRow,
+} from "@/types/householdChore";
 import { normalizeWorkspace } from "@/types/workspace";
 import type {
   ExpenseInsert,
@@ -262,6 +271,48 @@ export function rowToTrip(row: TripRow): Trip {
     sourceTemplateId: row.source_template_id ?? undefined,
     copiedFromTripId: row.copied_from_trip_id ?? undefined,
     workspace: normalizeWorkspace(row.workspace),
+    householdCoordinationEnabled: row.household_coordination_enabled ?? false,
+  };
+}
+
+export function rowToHouseholdChore(row: HouseholdChoreRow): HouseholdChore {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    title: row.title,
+    details: row.details ?? undefined,
+    cadence: row.cadence,
+    rotationWallets: row.rotation_wallets ?? [],
+    rotationCursor: row.rotation_cursor ?? 0,
+    nextDueOn: row.next_due_on,
+    active: row.active,
+    createdByWallet: row.created_by_wallet,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function rowToHouseholdChoreCompletion(
+  row: HouseholdChoreCompletionRow,
+): HouseholdChoreCompletion {
+  return {
+    id: row.id,
+    choreId: row.chore_id,
+    tripId: row.trip_id,
+    completedByWallet: row.completed_by_wallet,
+    dueOn: row.due_on,
+    supplyExpenseId: row.supply_expense_id ?? undefined,
+    completedAt: row.completed_at,
+  };
+}
+
+export function rowToHouseholdChorePreference(
+  row: HouseholdChorePreferenceRow,
+): HouseholdChorePreference {
+  return {
+    tripId: row.trip_id,
+    walletAddress: row.wallet_address,
+    optedOut: row.opted_out,
   };
 }
 
@@ -407,6 +458,7 @@ export function tripToInsert(trip: Trip, creatorWallet: string): TripInsert {
     recurring_rules: normalizeRecurringRules(trip.recurringRules) as unknown as Json,
     permissions: normalizePermissions(trip.permissions) as unknown as Json,
     workspace: (trip.workspace ? normalizeWorkspace(trip.workspace) : null) as unknown as Json,
+    household_coordination_enabled: trip.householdCoordinationEnabled ?? false,
   };
 }
 
@@ -430,6 +482,9 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
   if (updates.workspace !== undefined) {
     patch.workspace = normalizeWorkspace(updates.workspace) as unknown as Json;
   }
+  if (updates.householdCoordinationEnabled !== undefined) {
+    patch.household_coordination_enabled = updates.householdCoordinationEnabled;
+  }
   return patch;
 }
 
@@ -441,7 +496,7 @@ const USER_COLUMNS = "id, wallet_address, display_name, created_at, updated_at, 
 const EXPENSE_COLUMNS =
   "id, title, description, category, tags, total_amount, currency, exchange_rate, exchange_rate_timestamp, exchange_rate_source, entered_amount, settlement_asset, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
 const TRIP_COLUMNS =
-  "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, starts_on, ends_on, recurring_rules, permissions, source_template_id, copied_from_trip_id, workspace, created_at, updated_at";
+  "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, starts_on, ends_on, recurring_rules, permissions, source_template_id, copied_from_trip_id, workspace, household_coordination_enabled, created_at, updated_at";
 const TRIP_TEMPLATE_COLUMNS =
   "id, owner_wallet, name, description, members, recurring_rules, permissions, duration_days, source_trip_id, created_at, updated_at";
 const SETTLEMENT_INTENT_COLUMNS =
@@ -1371,6 +1426,116 @@ export async function updateTripRow(
     .single();
 
   return rowToTrip(unwrap(result, "update this trip") as TripRow);
+}
+
+export async function fetchHouseholdChores(
+  tripId: string,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<HouseholdChore[]> {
+  const { data, error } = await client
+    .from("household_chores")
+    .select("*")
+    .eq("trip_id", tripId)
+    .order("next_due_on", { ascending: true });
+  if (error) throw toDatabaseError(error, "load household chores");
+  return (data ?? []).map((row) => rowToHouseholdChore(row as HouseholdChoreRow));
+}
+
+export async function fetchHouseholdChoreCompletions(
+  tripId: string,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<HouseholdChoreCompletion[]> {
+  const { data, error } = await client
+    .from("household_chore_completions")
+    .select("*")
+    .eq("trip_id", tripId)
+    .order("completed_at", { ascending: false })
+    .limit(100);
+  if (error) throw toDatabaseError(error, "load chore completion history");
+  return (data ?? []).map((row) =>
+    rowToHouseholdChoreCompletion(row as HouseholdChoreCompletionRow),
+  );
+}
+
+export async function fetchHouseholdChorePreferences(
+  tripId: string,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<HouseholdChorePreference[]> {
+  const { data, error } = await client
+    .from("household_chore_preferences")
+    .select("*")
+    .eq("trip_id", tripId);
+  if (error) throw toDatabaseError(error, "load household chore preferences");
+  return (data ?? []).map((row) =>
+    rowToHouseholdChorePreference(row as HouseholdChorePreferenceRow),
+  );
+}
+
+export async function createHouseholdChoreRow(
+  tripId: string,
+  createdByWallet: string,
+  draft: HouseholdChoreDraft,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<HouseholdChore> {
+  const result = await client
+    .from("household_chores")
+    .insert({
+      trip_id: tripId,
+      title: draft.title.trim(),
+      details: draft.details?.trim() || null,
+      cadence: draft.cadence,
+      rotation_wallets: [...new Set(draft.rotationWallets.map((wallet) => wallet.trim()))],
+      next_due_on: draft.nextDueOn,
+      created_by_wallet: createdByWallet,
+    })
+    .select("*")
+    .single();
+  return rowToHouseholdChore(unwrap(result, "create this chore") as HouseholdChoreRow);
+}
+
+export async function archiveHouseholdChoreRow(
+  choreId: string,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<void> {
+  const result = await client
+    .from("household_chores")
+    .update({ active: false })
+    .eq("id", choreId)
+    .select("id")
+    .single();
+  unwrap(result, "archive this chore");
+}
+
+export async function setHouseholdChoreOptOut(
+  tripId: string,
+  walletAddress: string,
+  optedOut: boolean,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<void> {
+  const result = await client.from("household_chore_preferences").upsert(
+    {
+      trip_id: tripId,
+      wallet_address: walletAddress.trim(),
+      opted_out: optedOut,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "trip_id,wallet_address" },
+  );
+  if (result.error) throw toDatabaseError(result.error, "save your chore preference");
+}
+
+export async function completeHouseholdChoreRow(
+  choreId: string,
+  dueOn: string,
+  supplyExpenseId: string | null,
+  client: StellarStarClient = requireAuthenticatedClient(),
+): Promise<string> {
+  const result = await client.rpc("complete_household_chore", {
+    p_chore_id: choreId,
+    p_due_on: dueOn,
+    p_supply_expense_id: supplyExpenseId,
+  });
+  return unwrap(result, "record this chore completion");
 }
 
 export async function setTripMemberRole(
