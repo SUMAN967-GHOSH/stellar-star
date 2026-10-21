@@ -11,6 +11,12 @@
  * silently resolves every query to `never`.
  */
 
+import type {
+  HouseholdChoreCompletionRow,
+  HouseholdChorePreferenceRow,
+  HouseholdChoreRow,
+} from "./householdChore";
+
 export type Json =
   | string
   | number
@@ -404,12 +410,6 @@ export type IdempotencyRecordRow = {
   locked_until: string;
 };
 
-import type {
-  HouseholdChoreCompletionRow,
-  HouseholdChorePreferenceRow,
-  HouseholdChoreRow,
-} from "./householdChore";
-
 export type Database = {
   public: {
     Tables: {
@@ -476,6 +476,7 @@ export type Database = {
           | "permissions"
           | "source_template_id"
           | "copied_from_trip_id"
+          | "household_coordination_enabled"
         > & {
           id?: string;
           created_at?: string;
@@ -510,7 +511,7 @@ export type Database = {
           created_at?: string;
           updated_at?: string;
         };
-        Update: Partial<Pick<HouseholdChoreRow, "title" | "details" | "cadence" | "rotation_wallets" | "rotation_cursor" | "next_due_on" | "active">>;
+        Update: Partial<Pick<HouseholdChoreRow, "active">>;
         Relationships: [];
       };
       household_chore_completions: {

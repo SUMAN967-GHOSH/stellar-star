@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS public.household_chores (
   cadence TEXT NOT NULL CHECK (cadence IN ('weekly', 'biweekly', 'monthly')),
   rotation_wallets TEXT[] NOT NULL CHECK (cardinality(rotation_wallets) > 0),
   rotation_cursor INTEGER NOT NULL DEFAULT 0 CHECK (rotation_cursor >= 0),
+  CHECK (rotation_cursor < cardinality(rotation_wallets)),
   next_due_on DATE NOT NULL,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_by_wallet TEXT NOT NULL,
@@ -21,6 +22,11 @@ CREATE TABLE IF NOT EXISTS public.household_chores (
 
 CREATE INDEX IF NOT EXISTS household_chores_trip_active_due_idx
   ON public.household_chores (trip_id, active, next_due_on);
+
+DROP TRIGGER IF EXISTS trg_016_household_chores_updated_at ON public.household_chores;
+CREATE TRIGGER trg_016_household_chores_updated_at
+  BEFORE UPDATE ON public.household_chores
+  FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 CREATE TABLE IF NOT EXISTS public.household_chore_completions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -93,7 +99,7 @@ BEGIN
   FOR UPDATE;
   IF NOT FOUND THEN RAISE EXCEPTION 'HOUSEHOLD_CHORE_NOT_FOUND'; END IF;
 
-  SELECT * INTO v_trip FROM public.trips WHERE id = v_chore.trip_id;
+  SELECT * INTO v_trip FROM public.trips WHERE id = v_chore.trip_id FOR UPDATE;
   IF NOT FOUND OR NOT v_trip.household_coordination_enabled
      OR NOT (v_trip.member_wallets @> ARRAY[v_wallet]) THEN
     RAISE EXCEPTION 'HOUSEHOLD_MODULE_UNAVAILABLE' USING ERRCODE = '42501';
@@ -219,20 +225,24 @@ CREATE POLICY household_chores_update_creators ON public.household_chores
   FOR UPDATE TO authenticated
   USING (
     created_by_wallet = public.current_wallet()
-    AND EXISTS (SELECT 1 FROM public.trips trip WHERE trip.id = trip_id AND trip.household_coordination_enabled)
+    AND EXISTS (
+      SELECT 1 FROM public.trips trip
+      WHERE trip.id = household_chores.trip_id
+        AND trip.household_coordination_enabled
+        AND trip.member_wallets @> ARRAY[public.current_wallet()]
+    )
   )
   WITH CHECK (
     created_by_wallet = public.current_wallet()
-    AND EXISTS (SELECT 1 FROM public.trips trip WHERE trip.id = trip_id AND trip.household_coordination_enabled)
+    AND EXISTS (
+      SELECT 1 FROM public.trips trip
+      WHERE trip.id = household_chores.trip_id
+        AND trip.household_coordination_enabled
+        AND trip.member_wallets @> ARRAY[public.current_wallet()]
+    )
   );
 
 DROP POLICY IF EXISTS household_chores_delete_creators ON public.household_chores;
-CREATE POLICY household_chores_delete_creators ON public.household_chores
-  FOR DELETE TO authenticated
-  USING (
-    created_by_wallet = public.current_wallet()
-    AND EXISTS (SELECT 1 FROM public.trips trip WHERE trip.id = trip_id AND trip.household_coordination_enabled)
-  );
 
 DROP POLICY IF EXISTS household_chore_completions_select_members ON public.household_chore_completions;
 CREATE POLICY household_chore_completions_select_members ON public.household_chore_completions
@@ -291,11 +301,39 @@ CREATE POLICY household_chore_preferences_update_self ON public.household_chore_
     )
   );
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.household_chores TO authenticated;
+GRANT SELECT, INSERT ON public.household_chores TO authenticated;
+GRANT UPDATE (active) ON public.household_chores TO authenticated;
 GRANT SELECT ON public.household_chore_completions TO authenticated;
 GRANT SELECT, INSERT, UPDATE ON public.household_chore_preferences TO authenticated;
 REVOKE ALL ON FUNCTION public.complete_household_chore(UUID, DATE, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.complete_household_chore(UUID, DATE, UUID) TO authenticated;
+
+DO $publication$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'household_chores'
+    ) THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.household_chores;
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public'
+        AND tablename = 'household_chore_completions'
+    ) THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.household_chore_completions;
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public'
+        AND tablename = 'household_chore_preferences'
+    ) THEN
+      ALTER PUBLICATION supabase_realtime ADD TABLE public.household_chore_preferences;
+    END IF;
+  END IF;
+END;
+$publication$;
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0019', '0019_shared_household_coordination', 'household_coordination_v1')
 ON CONFLICT (version) DO NOTHING;
