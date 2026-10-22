@@ -1,9 +1,3 @@
-function toAnalyticsWalletType(id?: string | null): "freighter" | "albedo" | "other" | "unknown" {
-  if (!id) return "unknown";
-  if (id === "freighter" || id === "albedo") return id;
-  return "other";
-}
-
 "use client";
 
 import React, {
@@ -27,6 +21,12 @@ import {
 import { reportError } from "@/lib/observability/reportError";
 import type { WalletContextType } from "@/types/wallet";
 import { useToast } from "@/components/ui/Toast";
+function toAnalyticsWalletType(id?: string | null): "freighter" | "albedo" | "other" | "unknown" {
+  if (!id) return "unknown";
+  if (id === "freighter" || id === "albedo") return id;
+  return "other";
+}
+
 import { resetSupabaseClient } from "@/lib/supabase/client";
 import { trackAnalyticsEvent } from "@/lib/analytics/sink";
 

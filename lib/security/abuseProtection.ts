@@ -84,10 +84,10 @@ export async function enforceAbuseProtection(request: NextRequest, scope: AbuseS
     if (result.allowed) continue;
     const blocks = await checkRateLimit(`abuse:block:${scope}:${ipHash}`, 3, 5 * 60_000);
     const validChallenge = hasValidChallenge(request, scope, ipHash);
-    const challengeRequired = Boolean(policy.challengeAfterBlocks && blocks.count >= policy.challengeAfterBlocks && !validChallenge);
-    const event = blocks.count >= 3 ? "rate_limit_alert" : "rate_limit_blocked";
-    void recordSecurityEvent({ event, scope, ipHash, walletHash, endpoint: request.nextUrl.pathname, requestId, metadata: { dimension: key.split(":")[2], count: result.count, challengeRequired } });
-    if (scope === "invitation.verify") void recordSecurityEvent({ event: "enumeration_suspected", scope, ipHash, endpoint: request.nextUrl.pathname, requestId, metadata: { count: result.count } });
+    const challengeRequired = Boolean(policy.challengeAfterBlocks && (blocks.count ?? 0) >= policy.challengeAfterBlocks && !validChallenge);
+    const event = (blocks.count ?? 0) >= 3 ? "rate_limit_alert" : "rate_limit_blocked";
+    void recordSecurityEvent({ event, scope, ipHash, walletHash, endpoint: request.nextUrl.pathname, requestId, metadata: { dimension: key.split(":")[2], count: result.count ?? 0, challengeRequired } });
+    if (scope === "invitation.verify") void recordSecurityEvent({ event: "enumeration_suspected", scope, ipHash, endpoint: request.nextUrl.pathname, requestId, metadata: { count: result.count ?? 0 } });
     // Proof-of-work is deliberately a narrow, temporary relief valve after a block.
     // Authenticated routes still require their wallet JWT and service-level permission checks.
     if (validChallenge) {

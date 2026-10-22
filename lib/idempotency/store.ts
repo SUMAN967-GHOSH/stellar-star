@@ -147,7 +147,7 @@ export async function withIdempotency<T>({
     if (existingMem.status === "completed") {
       return {
         data: existingMem.response_body as T,
-        status: existingMem.response_status,
+        status: existingMem.response_status ?? 200,
         replayed: true,
       };
     }
