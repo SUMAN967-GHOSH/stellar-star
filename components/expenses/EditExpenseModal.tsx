@@ -130,7 +130,7 @@ export function EditExpenseModal({
 
     const proposedUpdates: Partial<Expense> = updatesToApply ?? {
       title: title.trim(),
-      description: description.trim() || null,
+      description: description.trim() || undefined,
       totalAmount: totalAmount.trim(),
       currency,
       paidByMemberId,

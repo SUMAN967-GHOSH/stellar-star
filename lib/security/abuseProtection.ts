@@ -73,9 +73,11 @@ export async function enforceAbuseProtection(request: NextRequest, scope: AbuseS
   const ip = getClientIp(request);
   const ipHash = redactSecurityIdentifier(ip) ?? "unknown";
   const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
-  const dimensions: Array<[string, RateLimitPolicy]> = [[`abuse:${scope}:ip:${ipHash}`, policy.ip], [`abuse:${scope}:endpoint`, policy.endpoint]];
+    const dimensions: Array<[string, RateLimitPolicy]> = [];
+  if (policy.ip) dimensions.push([`abuse:${scope}:ip:${ipHash}`, policy.ip]);
   const walletHash = redactSecurityIdentifier(wallet);
-  if (walletHash && policy.wallet) dimensions.splice(1, 0, [`abuse:${scope}:wallet:${walletHash}`, policy.wallet]);
+  if (walletHash && policy.wallet) dimensions.push([`abuse:${scope}:wallet:${walletHash}`, policy.wallet]);
+  if (policy.endpoint) dimensions.push([`abuse:${scope}:endpoint`, policy.endpoint]);
 
   for (const [key, limit] of dimensions) {
     const result = await checkRateLimit(key, limit.limit, limit.windowMs);

@@ -36,7 +36,7 @@ export interface IdempotencyRecord {
   endpoint: string;
   request_fingerprint: string;
   status: "pending" | "completed" | "failed";
-  response_status: number;
+  response_status: number | null;
   response_body: any;
   created_at: string;
   locked_until: string;

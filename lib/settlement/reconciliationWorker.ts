@@ -717,7 +717,7 @@ export async function processReconciliationJob(
     // Update settlement intent if linked
     if (job.intentId) {
       try {
-        await markIntentRecorded(job.intentId, ledger, onChain, supabase);
+        await markIntentRecorded(job.intentId, ledger ?? undefined, onChain, supabase);
       } catch (err) {
         console.warn("[reconciliationWorker] Mark intent recorded:", err);
       }

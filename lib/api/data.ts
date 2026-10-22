@@ -107,7 +107,7 @@ export async function fetchTripById(
             id: data.id,
             name: data.name,
             description: data.description ?? "",
-            members: Array.isArray(data.members) ? data.members : [],
+            members: (Array.isArray(data.members) ? data.members : []) as unknown as Member[],
             expenseIds: Array.isArray(data.expense_ids) ? data.expense_ids : [],
             startsOn: data.starts_on ?? undefined,
             endsOn: data.ends_on ?? undefined,

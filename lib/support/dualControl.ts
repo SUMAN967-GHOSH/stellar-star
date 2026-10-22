@@ -117,7 +117,7 @@ export async function proposeCorrectiveAction(
         target_type: proposal.targetType,
         ticket_ref: proposal.ticketRef,
         reason: proposal.reason,
-        details: proposal.details,
+        details: proposal.details as any,
         proposed_by: proposal.proposedBy,
         proposed_at: proposal.proposedAt,
         status: proposal.status,
@@ -264,7 +264,7 @@ export async function approveCorrectiveAction(
           status: proposal.status,
           approved_by: proposal.approvedBy,
           approved_at: proposal.approvedAt,
-          execution_result: proposal.executionResult,
+          execution_result: proposal.executionResult as any,
         })
         .eq("id", proposal.id);
     } catch {}

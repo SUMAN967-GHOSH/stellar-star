@@ -63,6 +63,8 @@ export interface EventPropertiesMap {
   trip_created: {
     member_count: number;
     has_destination: boolean;
+    has_dates?: boolean;
+    has_recurring_rules?: boolean;
   };
   trip_viewed: {
     has_workspace: boolean;
@@ -75,21 +77,26 @@ export interface EventPropertiesMap {
     split_mode: "equal" | "exact" | "percentage" | "shares" | string;
     currency: string;
     member_count: number;
+    has_receipt?: boolean;
   };
   payment_started: {
     asset: string;
     is_partial: boolean;
+    currency?: string;
   };
   payment_submitted: {
     asset: string;
+    currency?: string;
   };
   payment_completed: {
     asset: string;
     duration_ms?: number;
+    currency?: string;
   };
   payment_failed: {
     asset: string;
     error_code: string;
+    currency?: string;
   };
 }
 

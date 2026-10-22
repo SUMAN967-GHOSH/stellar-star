@@ -305,13 +305,13 @@ export async function lookupIncident(
     try {
       const { data } = await client.from("expenses").select("*").eq("id", targetExpenseId).maybeSingle();
       if (data) {
-        expense = data as Expense;
+        expense = data as unknown as Expense;
       }
     } catch {}
   }
 
   // 3. Fetch associated Trip
-  const effectiveTripId = targetTripId || (expense as any)?.trip_id || expense?.tripId;
+  const effectiveTripId = targetTripId || (expense as any)?.trip_id || (expense as any)?.tripId;
   if (effectiveTripId && client) {
     try {
       const { data } = await client.from("trips").select("id, name, created_by_wallet, created_at").eq("id", effectiveTripId).maybeSingle();
