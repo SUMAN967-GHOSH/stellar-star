@@ -48,6 +48,9 @@ interface ExpenseContextType {
   refresh: () => Promise<void>;
 }
 
+
+
+
 const ExpenseContext = createContext<ExpenseContextType | null>(null);
 ExpenseContext.displayName = "ExpenseContext";
 
@@ -77,6 +80,7 @@ export function ExpenseProvider({ children }: { children: React.ReactNode }) {
     setExpenseDrafts(wallet ? readExpenseDrafts(wallet) : []);
   }, [wallet]);
 
+  
   const syncExpenseDrafts = useCallback(async () => {
     if (!wallet || !accessToken || !navigator.onLine || syncingDraftsRef.current) return;
     syncingDraftsRef.current = true;

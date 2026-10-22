@@ -11,6 +11,12 @@
  * silently resolves every query to `never`.
  */
 
+import type {
+  HouseholdChoreCompletionRow,
+  HouseholdChorePreferenceRow,
+  HouseholdChoreRow,
+} from "./householdChore";
+
 export type Json =
   | string
   | number
@@ -93,6 +99,7 @@ export type TripRow = {
   source_template_id: string | null;
   copied_from_trip_id: string | null;
   workspace?: Json | null;
+  household_coordination_enabled: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -380,6 +387,34 @@ export type SchemaMigrationRow = {
   checksum: string;
 };
 
+export type SupportAuditLogRow = {
+  id: string;
+  staff_identifier: string;
+  query_type: string;
+  query_value: string;
+  results_count: number;
+  ip_address: string;
+  user_agent: string | null;
+  created_at: string;
+};
+
+export type SupportCorrectiveActionRow = {
+  id: string;
+  action_type: string;
+  target_id: string;
+  target_type: string;
+  ticket_ref: string;
+  reason: string;
+  details: Json;
+  proposed_by: string;
+  proposed_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  status: "pending_approval" | "approved" | "executed" | "rejected" | "expired";
+  execution_result: Json | null;
+  created_at: string;
+};
+
 export type IdempotencyRecordRow = {
   key: string;
   wallet_address: string;
@@ -458,6 +493,7 @@ export type Database = {
           | "permissions"
           | "source_template_id"
           | "copied_from_trip_id"
+          | "household_coordination_enabled"
         > & {
           id?: string;
           created_at?: string;
@@ -469,6 +505,7 @@ export type Database = {
           permissions?: Json;
           source_template_id?: string | null;
           copied_from_trip_id?: string | null;
+          household_coordination_enabled?: boolean;
         };
         // Copy provenance is written once, by create_trip_from_copy.
         Update: Partial<
@@ -480,6 +517,31 @@ export type Database = {
         Row: TripRoleAuditRow;
         Insert: Record<string, never>;
         Update: Record<string, never>;
+        Relationships: [];
+      };
+      household_chores: {
+        Row: HouseholdChoreRow;
+        Insert: Omit<HouseholdChoreRow, "id" | "rotation_cursor" | "active" | "created_at" | "updated_at"> & {
+          id?: string;
+          rotation_cursor?: number;
+          active?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Pick<HouseholdChoreRow, "active">>;
+        Relationships: [];
+      };
+      household_chore_completions: {
+        Row: HouseholdChoreCompletionRow;
+        Insert: Record<string, never>;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
+      household_chore_preferences: {
+        Row: HouseholdChorePreferenceRow;
+        Insert: Pick<HouseholdChorePreferenceRow, "trip_id" | "wallet_address"> &
+          Partial<Pick<HouseholdChorePreferenceRow, "opted_out" | "updated_at">>;
+        Update: Partial<Pick<HouseholdChorePreferenceRow, "opted_out" | "updated_at">>;
         Relationships: [];
       };
       trip_templates: {
@@ -741,6 +803,25 @@ export type Database = {
         Update: Partial<AuthChallengeRow>;
         Relationships: [];
       };
+
+      support_audit_logs: {
+        Row: SupportAuditLogRow;
+        Insert: Omit<SupportAuditLogRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<SupportAuditLogRow>;
+        Relationships: [];
+      };
+      support_corrective_actions: {
+        Row: SupportCorrectiveActionRow;
+        Insert: Omit<SupportCorrectiveActionRow, "id" | "created_at"> & {
+          id?: string;
+          created_at?: string;
+        };
+        Update: Partial<SupportCorrectiveActionRow>;
+        Relationships: [];
+      };
       auth_rate_limits: {
         Row: AuthRateLimitRow;
         Insert: {
@@ -764,6 +845,10 @@ export type Database = {
           p_tags: string[] | null; p_payer: string | null; p_status: string | null; p_asset: string | null;
           p_from: string | null; p_to: string | null; p_cursor_created_at: string | null; p_cursor_id: string | null; p_limit: number };
         Returns: ExpenseRow[];
+      };
+      complete_household_chore: {
+        Args: { p_chore_id: string; p_due_on: string; p_supply_expense_id: string | null };
+        Returns: string;
       };
       save_trip_template: {
         Args: { p_idempotency_key: string; p_source_trip_id: string; p_template: Json };

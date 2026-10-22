@@ -713,6 +713,11 @@ forcing it into the finance model.
 - Members can opt out; trip owners can disable the module completely.
 - Pilot feedback defines success metrics before a general release.
 
+**Prototype status:** Implemented as an owner-enabled, trip-scoped research
+prototype. The success thresholds and pilot feedback plan are recorded in
+`docs/PILOT_FEEDBACK_METRICS.md`; no pilot outcomes are claimed. General release
+remains gated on collecting and reviewing pilot results.
+
 ### 040 — Explore community funds and milestone-based spending
 
 **Priority:** P3 · **Size:** XL · **Depends on:** 005, 025, 030, 035

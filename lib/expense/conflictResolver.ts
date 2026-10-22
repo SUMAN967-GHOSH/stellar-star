@@ -203,6 +203,52 @@ export function mergeExpenseUpdates(
       proposedUpdates.splitMode !== undefined ||
       proposedUpdates.paidByMemberId !== undefined;
 
+    // Settled share constraints
+    const settledShares = baseExpense.shares.filter((s) => s.paid || hasInstallments(s));
+    const settledTotal = Money.sum(settledShares.map((s) => s.amount));
+
+    if (settledShares.length > 0) {
+      if (proposedUpdates.currency && proposedUpdates.currency !== baseExpense.currency) {
+        return {
+          success: false,
+          conflict: {
+            fields: ["currency"],
+            reason: "Cannot change the currency of an expense with settled payments.",
+            serverExpense,
+            proposedUpdates,
+          },
+        };
+      }
+
+      if (parsedTotal.lessThan(settledTotal)) {
+        return {
+          success: false,
+          conflict: {
+            fields: ["totalAmount"],
+            reason: `Cannot reduce total to ${updatedTotal} because ${settledTotal.format(7)} has already been settled on-chain.`,
+            serverExpense,
+            proposedUpdates,
+          },
+        };
+      }
+
+      if (proposedUpdates.members) {
+        for (const s of settledShares) {
+          if (!proposedUpdates.members.some((m) => m.id === s.memberId)) {
+            return {
+              success: false,
+              conflict: {
+                fields: ["members"],
+                reason: `Cannot remove member "${s.name}" because their share was already settled on-chain.`,
+                serverExpense,
+                proposedUpdates,
+              },
+            };
+          }
+        }
+      }
+    }
+
     const updatedShares = sharesNeedRecompute
       ? recomputeSharesWithSettled(
           updatedTotal,

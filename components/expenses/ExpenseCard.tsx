@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRightLeft, Ban, ChevronRight, ReceiptText, Trash2 } from "lucide-react";
 import { PaymentStatus } from "@/components/payment/PaymentStatus";
@@ -18,6 +18,8 @@ import { Money } from "@/components/ui/Money";
 import { useLocale } from "@/context/LocaleContext";
 import { describeSavedConversion, enteredAmountOf } from "@/lib/fx/quoteLock";
 import { settlementAssetOf } from "@/lib/settlement/expenseAsset";
+import { shareBalance } from "@/lib/settlement/installments";
+import { AssetReadinessPanel } from "@/components/onboarding/AssetReadinessPanel";
 
 interface ExpenseCardProps {
   expense: Expense;
@@ -63,6 +65,12 @@ export function ExpenseCard({ expense, currentUserPublicKey, onDelete, tripId }:
   // Exact: the saved entered amount, or an exact BigInt reconstruction for
   // rows saved before #323. Never float division.
   const fiatAmount = enteredAmountOf(expense);
+  const connectedShare = currentUserPublicKey
+    ? expense.shares.find((share) => share.walletAddress === currentUserPublicKey && share.memberId !== expense.paidByMemberId && !shareBalance(share).fullySettled)
+    : undefined;
+  const connectedShareAmount = connectedShare ? shareBalance(connectedShare).remaining : null;
+  const readinessKey = `${currentUserPublicKey ?? ""}:${expense.id}:${settlementAssetOf(expense)}:${connectedShareAmount ?? ""}`;
+  const readinessChanged = useCallback((ready: boolean) => setWalletReady({ key: readinessKey, ready }), [readinessKey]);
 
   const handlePay = async (share: SplitShare, amount?: string) => {
     if (expense.voided) return;
@@ -326,6 +334,7 @@ interface ExpenseCardFooterProps {
   isSettledOrPaid: boolean;
   confirmDelete: boolean;
   canDelete: boolean;
+  canEdit: boolean;
   showDeleteHint: boolean;
   onCancelDelete: () => void;
   onConfirmDelete: () => void;
@@ -339,6 +348,7 @@ function ExpenseCardFooter({
   isSettledOrPaid,
   confirmDelete,
   canDelete,
+  canEdit,
   showDeleteHint,
   onCancelDelete,
   onConfirmDelete,
