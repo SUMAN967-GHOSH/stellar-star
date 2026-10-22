@@ -1,6 +1,7 @@
 /** @jest-environment jsdom */
 import React from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
+import "@testing-library/jest-dom";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 

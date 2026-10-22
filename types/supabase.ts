@@ -256,6 +256,35 @@ export type SettlementAttestationRow = {
   created_at: string;
 };
 
+export type ReconciliationJobRow = {
+  id: string;
+  intent_id: string | null;
+  trip_id: string;
+  expense_id: string;
+  member_id: string;
+  payer_wallet: string;
+  member_wallet: string;
+  asset: string;
+  amount: string;
+  amount_stroops: string;
+  expected_memo: string | null;
+  request_id: string | null;
+  tx_hash: string | null;
+  ledger: number | null;
+  status: "not_submitted" | "submitted_not_confirmed" | "confirmed_not_recorded" | "recorded" | "escalated" | "failed";
+  attempts: number;
+  max_attempts: number;
+  backoff_ms: number;
+  last_attempt_at: string | null;
+  next_attempt_at: string;
+  escalation_reason: string | null;
+  error_message: string | null;
+  verified_at: string | null;
+  recorded_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type SponsoredAccountRow = {
   account: string;
   /** `numeric(30)` — carried as a string so large values keep full precision. */
@@ -647,6 +676,16 @@ export type Database = {
         Update: Partial<TripInviteRow>;
         Relationships: [];
       };
+      reconciliation_queue: {
+        Row: ReconciliationJobRow;
+        Insert: Omit<ReconciliationJobRow, "id" | "created_at" | "updated_at"> & {
+          id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: Partial<Omit<ReconciliationJobRow, "id" | "created_at">>;
+        Relationships: [];
+      };
       settlement_intents: {
         Row: SettlementIntentRow;
         // Only the identifying/settlement fields are required. Everything the
@@ -1012,6 +1051,8 @@ export type AuthChallengeInsert = Database["public"]["Tables"]["auth_challenges"
 
 export type SettlementIntentInsert = Database["public"]["Tables"]["settlement_intents"]["Insert"];
 export type SettlementIntentUpdate = Database["public"]["Tables"]["settlement_intents"]["Update"];
+export type ReconciliationJobInsert = Database["public"]["Tables"]["reconciliation_queue"]["Insert"];
+export type ReconciliationJobUpdate = Database["public"]["Tables"]["reconciliation_queue"]["Update"];
 export type SettlementAttestationInsert =
   Database["public"]["Tables"]["settlement_attestations"]["Insert"];
 export type SponsoredAccountInsert = Database["public"]["Tables"]["sponsored_accounts"]["Insert"];
