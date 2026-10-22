@@ -56,6 +56,23 @@ export type ExpenseRow = {
   member_wallets: string[];
   created_at: string;
   updated_at: string;
+  voided?: boolean;
+  voided_at?: string | null;
+  voided_by_wallet?: string | null;
+  void_reason?: string | null;
+  correction_of_expense_id?: string | null;
+  correction_type?: 'reversal' | 'adjustment' | 'offset' | null;
+  correction_reason?: string | null;
+};
+
+export type ExpenseAuditEventRow = {
+  id: string;
+  expense_id: string;
+  action: 'voided' | 'correction_created' | 'reversal_created' | 'adjustment_created';
+  actor_wallet: string;
+  reason: string;
+  metadata: Json;
+  created_at: string;
 };
 
 export type TripRow = {
@@ -523,6 +540,12 @@ export type Database = {
         Update: Record<string, never>;
         Relationships: [];
       };
+      expense_audit_events: {
+        Row: ExpenseAuditEventRow;
+        Insert: Omit<ExpenseAuditEventRow, "id" | "created_at">;
+        Update: Record<string, never>;
+        Relationships: [];
+      };
       expense_disputes: {
         Row: ExpenseDisputeRow;
         Insert: Pick<ExpenseDisputeRow, "trip_id" | "expense_id" | "share_member_id" | "opened_by_wallet" | "category" | "comment" | "evidence_receipt_ids">;
@@ -854,6 +877,13 @@ export type Database = {
         Args: {
           p_updates: Json;
           p_tx_hash: string;
+        };
+        Returns: ExpenseRow[];
+      };
+      void_expense: {
+        Args: {
+          p_expense_id: string;
+          p_reason: string;
         };
         Returns: ExpenseRow[];
       };

@@ -96,7 +96,14 @@ CREATE TABLE IF NOT EXISTS public.expenses (
   created_by_wallet TEXT        NOT NULL,
   member_wallets    TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  voided            BOOLEAN     NOT NULL DEFAULT FALSE,
+  voided_at         TIMESTAMPTZ,
+  voided_by_wallet  TEXT,
+  void_reason       TEXT,
+  correction_of_expense_id UUID REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  correction_type   TEXT,
+  correction_reason TEXT
 );
 
 CREATE TABLE IF NOT EXISTS public.trips (
@@ -4345,6 +4352,166 @@ GRANT EXECUTE ON FUNCTION public.trip_member_role(UUID, TEXT),
 TO authenticated;
 
 NOTIFY pgrst, 'reload schema';
+
+
+-- ============================================================================
+-- EXPENSE CORRECTIONS, VOIDS & AUDIT TRAIL (#316)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS public.expense_audit_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  expense_id UUID NOT NULL REFERENCES public.expenses(id) ON DELETE RESTRICT,
+  action TEXT NOT NULL CHECK (action IN ('voided', 'correction_created', 'reversal_created', 'adjustment_created')),
+  actor_wallet TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 1 AND 1000),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_expense_audit_events_expense_id
+  ON public.expense_audit_events (expense_id, created_at DESC);
+
+CREATE OR REPLACE FUNCTION public.prevent_destructive_expense_operations()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+DECLARE
+  v_is_settled BOOLEAN;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    v_is_settled := OLD.settled OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+      WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+        OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+    );
+    IF v_is_settled THEN
+      RAISE EXCEPTION 'A settled expense cannot be deleted. Use a linked correction or offset to preserve financial history.' USING ERRCODE = '42501';
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.expenses WHERE correction_of_expense_id = OLD.id) THEN
+      RAISE EXCEPTION 'An expense with linked corrections cannot be deleted.' USING ERRCODE = '42501';
+    END IF;
+    RETURN OLD;
+  END IF;
+
+  IF TG_OP = 'UPDATE' THEN
+    IF OLD.voided = TRUE THEN
+      IF NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.total_amount IS DISTINCT FROM OLD.total_amount
+        OR NEW.shares IS DISTINCT FROM OLD.shares
+        OR NEW.settled IS DISTINCT FROM OLD.settled THEN
+        RAISE EXCEPTION 'A voided expense is immutable.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
+
+    IF NEW.voided = TRUE AND OLD.voided = FALSE THEN
+      v_is_settled := OLD.settled OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(OLD.shares) s
+        WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+          OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+      );
+      IF v_is_settled THEN
+        RAISE EXCEPTION 'A settled or partially paid expense cannot be voided; use a linked correction instead.' USING ERRCODE = '42501';
+      END IF;
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_prevent_destructive_expense_ops ON public.expenses;
+CREATE TRIGGER trg_prevent_destructive_expense_ops
+  BEFORE UPDATE OR DELETE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_destructive_expense_operations();
+
+CREATE OR REPLACE FUNCTION public.record_expense_correction_audit_event()
+RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW.voided = TRUE AND OLD.voided = FALSE THEN
+    INSERT INTO public.expense_audit_events (expense_id, action, actor_wallet, reason, metadata)
+    VALUES (NEW.id, 'voided', NEW.voided_by_wallet, NEW.void_reason, jsonb_build_object('total_amount', NEW.total_amount));
+  ELSIF TG_OP = 'INSERT' AND NEW.correction_of_expense_id IS NOT NULL THEN
+    INSERT INTO public.expense_audit_events (expense_id, action, actor_wallet, reason, metadata)
+    VALUES (
+      NEW.id,
+      CASE WHEN NEW.correction_type = 'reversal' THEN 'reversal_created' ELSE 'adjustment_created' END,
+      NEW.created_by_wallet,
+      NEW.correction_reason,
+      jsonb_build_object('correction_of_expense_id', NEW.correction_of_expense_id, 'correction_type', NEW.correction_type)
+    );
+  END IF;
+  RETURN NEW;
+END;
+$fn$;
+
+DROP TRIGGER IF EXISTS trg_expense_correction_audit ON public.expenses;
+CREATE TRIGGER trg_expense_correction_audit
+  AFTER INSERT OR UPDATE ON public.expenses
+  FOR EACH ROW EXECUTE FUNCTION public.record_expense_correction_audit_event();
+
+CREATE OR REPLACE FUNCTION public.void_expense(p_expense_id UUID, p_reason TEXT)
+RETURNS public.expenses LANGUAGE plpgsql SECURITY INVOKER AS $fn$
+DECLARE
+  v_expense public.expenses%ROWTYPE;
+  v_caller TEXT;
+  v_trimmed_reason TEXT;
+  v_is_settled BOOLEAN;
+  v_is_authorized BOOLEAN;
+BEGIN
+  v_trimmed_reason := btrim(COALESCE(p_reason, ''));
+  IF char_length(v_trimmed_reason) < 1 OR char_length(v_trimmed_reason) > 1000 THEN
+    RAISE EXCEPTION 'A void reason between 1 and 1000 characters is required.' USING ERRCODE = '22023';
+  END IF;
+
+  v_caller := public.current_wallet();
+  IF v_caller IS NULL OR v_caller = '' THEN
+    RAISE EXCEPTION 'Authentication required.' USING ERRCODE = '42501';
+  END IF;
+
+  SELECT * INTO v_expense FROM public.expenses WHERE id = p_expense_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Expense not found.' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF v_expense.voided THEN
+    RAISE EXCEPTION 'Expense is already voided.' USING ERRCODE = '42501';
+  END IF;
+
+  v_is_authorized := (
+    upper(v_expense.created_by_wallet) = upper(v_caller)
+    OR EXISTS (
+      SELECT 1 FROM jsonb_array_elements(v_expense.members) m
+      WHERE m->>'id' = v_expense.paid_by_member_id AND upper(m->>'walletAddress') = upper(v_caller)
+    )
+    OR public.expense_has_permission(p_expense_id, 'expenses.manage')
+  );
+  IF NOT v_is_authorized THEN
+    RAISE EXCEPTION 'You are not authorized to void this expense.' USING ERRCODE = '42501';
+  END IF;
+
+  v_is_settled := v_expense.settled OR EXISTS (
+    SELECT 1 FROM jsonb_array_elements(v_expense.shares) s
+    WHERE COALESCE((s->>'paid')::BOOLEAN, FALSE) = TRUE
+      OR (s->'installments' IS NOT NULL AND jsonb_array_length(s->'installments') > 0)
+  );
+  IF v_is_settled THEN
+    RAISE EXCEPTION 'A settled or partially paid expense cannot be voided; use a linked correction instead.' USING ERRCODE = '42501';
+  END IF;
+
+  UPDATE public.expenses
+  SET voided = TRUE,
+      voided_at = NOW(),
+      voided_by_wallet = v_caller,
+      void_reason = v_trimmed_reason,
+      updated_at = NOW()
+  WHERE id = p_expense_id
+  RETURNING * INTO v_expense;
+
+  RETURN v_expense;
+END;
+$fn$;
+
+ALTER TABLE public.expense_audit_events ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.expense_audit_events TO authenticated;
+GRANT EXECUTE ON FUNCTION public.void_expense(UUID, TEXT) TO authenticated;
 
 INSERT INTO public.schema_migrations (version, name, checksum)
 VALUES ('0016', '0016_trip_roles_and_permissions', 'trip_roles_permissions_v2')
