@@ -1,5 +1,6 @@
 import { isServerSupabaseConfigured, createServiceRoleClient } from "@/lib/supabase/server";
-import type { Trip, Member } from "@/types/trip";
+import type { Trip } from "@/types/trip";
+import type { Member } from "@/types/expense";
 import type { Expense } from "@/types/expense";
 
 declare global {
