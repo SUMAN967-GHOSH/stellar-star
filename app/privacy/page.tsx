@@ -3,20 +3,7 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
-import {
-  Shield,
-  Lock,
-  Database,
-  Trash2,
-  Download,
-  AlertTriangle,
-  CheckCircle2,
-  ExternalLink,
-  ChevronRight,
-  ArrowLeft,
-  Clock,
-  FileText,
-} from "lucide-react";
+import { Shield, Lock, Database, Trash2, Download, AlertTriangle, CheckCircle2, ExternalLink, ChevronRight, ArrowLeft, Clock, FileText } from "lucide-react";
 import Header from "@/components/layout/Header";
 import Footer from "@/components/layout/Footer";
 import { useAuth } from "@/context/AuthContext";

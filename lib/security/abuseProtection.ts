@@ -47,7 +47,7 @@ function createChallenge(scope: AbuseScope, ipHash: string): string {
 }
 
 function hasValidChallenge(request: NextRequest, scope: AbuseScope, ipHash: string): boolean {
-  const value = request.headers.get("x-abuse-challenge");
+  const value = request?.headers?.get?.("x-abuse-challenge");
   if (!value) return false;
   const [token, counter] = value.split(":");
   if (!token || !counter || !/^\d{1,12}$/.test(counter)) return false;
@@ -72,7 +72,7 @@ export async function enforceAbuseProtection(request: NextRequest, scope: AbuseS
   const policy = ABUSE_POLICIES[scope];
   const ip = getClientIp(request);
   const ipHash = redactSecurityIdentifier(ip) ?? "unknown";
-  const requestId = getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER));
+  const requestId = getOrCreateRequestId(request?.headers?.get?.(REQUEST_ID_HEADER));
     const dimensions: Array<[string, RateLimitPolicy]> = [];
   if (policy.ip) dimensions.push([`abuse:${scope}:ip:${ipHash}`, policy.ip]);
   const walletHash = redactSecurityIdentifier(wallet);
@@ -86,12 +86,12 @@ export async function enforceAbuseProtection(request: NextRequest, scope: AbuseS
     const validChallenge = hasValidChallenge(request, scope, ipHash);
     const challengeRequired = Boolean(policy.challengeAfterBlocks && (blocks.count ?? 0) >= policy.challengeAfterBlocks && !validChallenge);
     const event = (blocks.count ?? 0) >= 3 ? "rate_limit_alert" : "rate_limit_blocked";
-    void recordSecurityEvent({ event, scope, ipHash, walletHash, endpoint: request.nextUrl.pathname, requestId, metadata: { dimension: key.split(":")[2], count: result.count ?? 0, challengeRequired } });
-    if (scope === "invitation.verify") void recordSecurityEvent({ event: "enumeration_suspected", scope, ipHash, endpoint: request.nextUrl.pathname, requestId, metadata: { count: result.count ?? 0 } });
+    void recordSecurityEvent({ event, scope, ipHash, walletHash, endpoint: request?.nextUrl?.pathname ?? "/api", requestId, metadata: { dimension: key.split(":")[2], count: result.count ?? 0, challengeRequired } });
+    if (scope === "invitation.verify") void recordSecurityEvent({ event: "enumeration_suspected", scope, ipHash, endpoint: request?.nextUrl?.pathname ?? "/api", requestId, metadata: { count: result.count ?? 0 } });
     // Proof-of-work is deliberately a narrow, temporary relief valve after a block.
     // Authenticated routes still require their wallet JWT and service-level permission checks.
     if (validChallenge) {
-      void recordSecurityEvent({ event: "suspicious_retry", scope, ipHash, walletHash, endpoint: request.nextUrl.pathname, requestId, metadata: { challenged: true } });
+      void recordSecurityEvent({ event: "suspicious_retry", scope, ipHash, walletHash, endpoint: request?.nextUrl?.pathname ?? "/api", requestId, metadata: { challenged: true } });
       continue;
     }
     const body: Record<string, unknown> = { error: "Request rate limit reached. Wait before retrying.", code: "RATE_LIMITED", retryAfterSeconds: Math.max(MIN_RETRY_SECONDS, Math.ceil(result.resetMs / 1000)), requestId };
@@ -103,6 +103,6 @@ export async function enforceAbuseProtection(request: NextRequest, scope: AbuseS
 
 /** Independently caps creation of new idempotency keys; replays do not consume this budget. */
 export async function enforceIdempotencyKeyLimit(request: NextRequest, wallet: string, key: string | null): Promise<AbuseProtectionResult> {
-  if (!key) return { ok: true, requestId: getOrCreateRequestId(request.headers.get(REQUEST_ID_HEADER)) };
+  if (!key) return { ok: true, requestId: getOrCreateRequestId(request?.headers?.get?.(REQUEST_ID_HEADER)) };
   return enforceAbuseProtection(request, "idempotency.key", wallet);
 }
