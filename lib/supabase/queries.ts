@@ -7,7 +7,7 @@
  */
 
 import type { PostgrestError } from "@supabase/supabase-js";
-import type { Expense, Member, SplitShare } from "@/types/expense";
+import type { Expense, Member, SplitShare, CorrectionType } from "@/types/expense";
 import type { Trip, TripPermission, TripRole, TripTemplate } from "@/types/trip";
 import type {
   HouseholdChore,
@@ -247,6 +247,13 @@ export function rowToExpense(row: ExpenseRow): Expense {
     settled: row.settled,
     version: row.version ?? 1,
     updatedAt: row.updated_at,
+    voided: row.voided ?? false,
+    voidedAt: row.voided_at ?? undefined,
+    voidedByWallet: row.voided_by_wallet ?? undefined,
+    voidReason: row.void_reason ?? undefined,
+    correctionOfExpenseId: row.correction_of_expense_id ?? undefined,
+    correctionType: (row.correction_type as CorrectionType) ?? undefined,
+    correctionReason: row.correction_reason ?? undefined,
   };
 }
 
@@ -408,6 +415,13 @@ export function expenseToInsert(expense: Expense, creatorWallet: string): Expens
     version: expense.version ?? 1,
     created_by_wallet: creatorWallet,
     created_at: expense.createdAt,
+    voided: expense.voided ?? false,
+    voided_at: expense.voidedAt ?? null,
+    voided_by_wallet: expense.voidedByWallet ?? null,
+    void_reason: expense.voidReason ?? null,
+    correction_of_expense_id: expense.correctionOfExpenseId ?? null,
+    correction_type: expense.correctionType ?? null,
+    correction_reason: expense.correctionReason ?? null,
   };
 }
 
@@ -494,7 +508,7 @@ export function tripToUpdate(updates: Partial<Trip>): TripUpdate {
 
 const USER_COLUMNS = "id, wallet_address, display_name, created_at, updated_at, last_login_at";
 const EXPENSE_COLUMNS =
-  "id, title, description, category, tags, total_amount, currency, exchange_rate, exchange_rate_timestamp, exchange_rate_source, entered_amount, settlement_asset, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at";
+  "id, title, description, category, tags, total_amount, currency, exchange_rate, exchange_rate_timestamp, exchange_rate_source, entered_amount, settlement_asset, split_mode, paid_by_member_id, members, shares, settled, created_by_wallet, member_wallets, created_at, updated_at, voided, voided_at, voided_by_wallet, void_reason, correction_of_expense_id, correction_type, correction_reason";
 const TRIP_COLUMNS =
   "id, name, description, members, expense_ids, settled, created_by_wallet, member_wallets, starts_on, ends_on, recurring_rules, permissions, source_template_id, copied_from_trip_id, workspace, household_coordination_enabled, created_at, updated_at";
 const TRIP_TEMPLATE_COLUMNS =
@@ -884,8 +898,73 @@ export async function deleteExpenseRow(
   id: string,
   client: StellarStarClient = requireAuthenticatedClient()
 ): Promise<void> {
+  const expense = await fetchExpenseById(id, client);
+  if (expense) {
+    if (expense.voided) {
+      throw new DatabaseError("Voided expenses cannot be deleted; they are retained for audit history.");
+    }
+    const hasPaidShares = expense.settled || expense.shares.some((s) => s.paid || (s.installments && s.installments.length > 0));
+    if (hasPaidShares) {
+      throw new DatabaseError("A settled expense cannot be deleted. Use a linked correction or offset to preserve financial history.");
+    }
+    if (expense.correctionOfExpenseId) {
+      throw new DatabaseError("A linked correction record cannot be deleted; it is part of the financial audit history.");
+    }
+  }
+
   const { error } = await client.from("expenses").delete().eq("id", id);
   if (error) throw toDatabaseError(error, "delete this expense");
+}
+
+export async function voidExpenseRow(
+  expenseId: string,
+  reason: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense> {
+  const trimmed = reason.trim();
+  if (!trimmed || trimmed.length > 1000) {
+    throw new DatabaseError("An audit reason between 1 and 1000 characters is required to void an expense.");
+  }
+
+  // 1. Try atomic RPC function
+  try {
+    const { data: rpcData, error: rpcError } = await client.rpc("void_expense", {
+      p_expense_id: expenseId,
+      p_reason: trimmed,
+    });
+    if (!rpcError && rpcData && rpcData.length > 0) {
+      return rowToExpense(rpcData[0] as ExpenseRow);
+    }
+  } catch {
+    // Fall back to direct update
+  }
+
+  // 2. Direct update fallback
+  const sessionRes = await client.auth.getSession();
+  const callerWallet = sessionRes?.data?.session?.user?.id || "";
+
+  const { data, error } = await client
+    .from("expenses")
+    .update({
+      voided: true,
+      void_reason: trimmed,
+      voided_at: new Date().toISOString(),
+      voided_by_wallet: callerWallet,
+    } as any)
+    .eq("id", expenseId)
+    .select(EXPENSE_COLUMNS)
+    .single();
+
+  if (error || !data) throw toDatabaseError(error!, "void this expense");
+  return rowToExpense(data as ExpenseRow);
+}
+
+export async function createCorrectionExpense(
+  correction: Expense,
+  creatorWallet: string,
+  client: StellarStarClient = requireAuthenticatedClient()
+): Promise<Expense> {
+  return insertExpense(correction, creatorWallet, client);
 }
 
 /**
