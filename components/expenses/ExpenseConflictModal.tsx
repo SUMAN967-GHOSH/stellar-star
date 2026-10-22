@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { AlertTriangle, RefreshCw, GitMerge, Check, X, ShieldAlert } from "lucide-react";
 import type { ConflictDetails } from "@/lib/expense/conflictResolver";
 import type { Expense } from "@/types/expense";
