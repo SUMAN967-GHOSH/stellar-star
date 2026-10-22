@@ -30,9 +30,9 @@ jest.mock("@/lib/reminders/repository", () => {
   };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const remindersRoute = require("@/app/api/reminders/route") as typeof import("@/app/api/reminders/route");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const requestRoute = require("@/app/api/reminders/[id]/route") as typeof import("@/app/api/reminders/[id]/route");
 
 function req(url: string, init: { method?: string; wallet?: string | null; body?: unknown } = {}) {

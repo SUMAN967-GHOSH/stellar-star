@@ -5,8 +5,10 @@ import "@testing-library/jest-dom";
 import { Input } from "@/components/ui/Input";
 import { Modal } from "@/components/ui/Modal";
 
+const MotionDiv = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ children, ...props }, ref) => <div ref={ref} {...props}>{children}</div>);
+MotionDiv.displayName = "MotionDiv";
 jest.mock("framer-motion", () => ({
-  motion: { div: React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(({ children, ...props }, ref) => <div ref={ref} {...props}>{children}</div>) },
+  motion: { div: MotionDiv },
 }));
 
 describe("accessible shared controls", () => {
